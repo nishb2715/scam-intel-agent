@@ -13,20 +13,30 @@ from app.core.threat import compute_threat_level
 from app.core.fingerprint import generate_fingerprint
 from app.core.stop_conditions import should_trigger_callback
 from app.services.guvi_callback import send_guvi_callback
-from app.config import API_KEY
+#from app.config import API_KEY
 
 router = APIRouter()
 
 SCAM_ACTIVATION_THRESHOLD = 40
 
-from fastapi import Header
+import os
+from fastapi import Header, HTTPException
 
 def verify_api_key(x_api_key: str = Header(..., alias="x-api-key")):
-    if x_api_key != API_KEY:
+    expected_key = os.environ.get("API_KEY")
+
+    if not expected_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Server misconfiguration: API key not set"
+        )
+
+    if x_api_key != expected_key:
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing API key"
         )
+
 
 @router.get("/auth-test")
 def auth_test(_: None = Depends(verify_api_key)):
