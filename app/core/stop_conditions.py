@@ -1,13 +1,22 @@
 # app/core/stop_conditions.py
 
-def should_trigger_callback(session: dict) -> bool:
+def should_trigger_callback(session):
     """
-    Determines whether final callback should be triggered.
+    Trigger callback once sufficient scam intelligence is collected.
     """
 
-    has_upi = len(session["intelligence"]["upiIds"]) > 0
-    has_link = len(session["intelligence"]["phishingLinks"]) > 0
-    high_scam_score = session["scamScore"] >= 70
-    probes_done = len(session["probesAsked"]) >= 3
+    intelligence = session.get("intelligence", {})
 
-    return has_upi or has_link or high_scam_score or probes_done
+    has_upi = bool(intelligence.get("upiIds"))
+    has_link = bool(intelligence.get("phishingLinks"))
+    has_phone = bool(intelligence.get("phoneNumbers"))
+
+    # Trigger if at least TWO strong scam artifacts are collected
+    if sum([has_upi, has_link, has_phone]) >= 2:
+        return True
+
+    # OR if conversation is long enough
+    if len(session.get("messages", [])) >= 5:
+        return True
+
+    return False
