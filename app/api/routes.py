@@ -1,3 +1,5 @@
+# app/api/routes.py
+
 from fastapi import APIRouter, Header, HTTPException, Depends, Request
 import os
 
@@ -39,20 +41,18 @@ def verify_api_key(x_api_key: str = Header(..., alias="x-api-key")):
 
 
 # -------------------------
-# ROOT HEALTH CHECK (NO AUTH)
+# ROOT HEALTH CHECK (NO AUTH, NO BODY)
 # -------------------------
-@router.get("/")
-@router.head("/")
-@router.post("/")
-def root_health_check(_: Request):
+@router.api_route("/", methods=["GET", "POST", "HEAD"])
+async def root_health_check(request: Request):
     return {
-        "status": "ok",
-        "message": "Agentic honeypot API is live"
+        "status": "success",
+        "reply": "Agentic honeypot API is live"
     }
 
 
 # -------------------------
-# AUTH TEST (DEBUG ONLY)
+# AUTH TEST (OPTIONAL)
 # -------------------------
 @router.get("/auth-test")
 def auth_test(_: None = Depends(verify_api_key)):
@@ -73,12 +73,21 @@ def handle_message(
     session.setdefault("probesAsked", [])
     session.setdefault("reasoningTrace", [])
 
-    # 1. Message tracking
-    session["messages"].append(payload.message)
+    # -----------------------------------
+    # 1. NORMALIZE MESSAGE (CRITICAL FIX)
+    # -----------------------------------
+    if isinstance(payload.message, dict):
+        text = payload.message.get("text", "")
+    else:
+        text = payload.message or ""
+
+    session["messages"].append(text)
     turn = len(session["messages"])
 
-    # 2. Scam detection
-    score = detect_scam(payload.message)
+    # -----------------------------------
+    # 2. SCAM DETECTION (TEXT ONLY)
+    # -----------------------------------
+    score = detect_scam(text)
     session["scamScore"] = min(session["scamScore"] + score, 100)
 
     session["reasoningTrace"].append(
@@ -89,17 +98,24 @@ def handle_message(
         )
     )
 
+    text_lower = text.lower()
+
     strong_signals = any([
-        "upi" in payload.message.lower(),
-        "http" in payload.message.lower(),
-        "blocked" in payload.message.lower(),
-        "suspended" in payload.message.lower()
+        "upi" in text_lower,
+        "http" in text_lower,
+        "blocked" in text_lower,
+        "suspended" in text_lower
     ])
 
-    scam_mode = session["scamScore"] >= SCAM_ACTIVATION_THRESHOLD or strong_signals
+    scam_mode = (
+        session["scamScore"] >= SCAM_ACTIVATION_THRESHOLD
+        or strong_signals
+    )
 
-    # 3. Intelligence extraction
-    extracted = extract_entities(payload.message)
+    # -----------------------------------
+    # 3. INTELLIGENCE EXTRACTION (TEXT ONLY)
+    # -----------------------------------
+    extracted = extract_entities(text)
 
     for key, values in extracted.items():
         for value in values:
@@ -116,7 +132,9 @@ def handle_message(
                     "sourceTurn": turn
                 })
 
-    # 4. Persona + probing
+    # -----------------------------------
+    # 4. PERSONA / PROBING
+    # -----------------------------------
     if scam_mode:
         probe, probe_type = get_probe_question(session)
         if probe:
@@ -127,20 +145,26 @@ def handle_message(
     else:
         reply = neutral_reply()
 
-    # 5. Threat scoring
+    # -----------------------------------
+    # 5. THREAT LEVEL
+    # -----------------------------------
     signals = {
-        "urgency": any(w in payload.message.lower() for w in ["urgent", "immediately", "today"]),
-        "payment_redirect": "upi" in payload.message.lower(),
-        "phishing": "http" in payload.message.lower(),
+        "urgency": any(w in text_lower for w in ["urgent", "immediately", "today"]),
+        "payment_redirect": "upi" in text_lower,
+        "phishing": "http" in text_lower,
         "multi_step": len(session["probesAsked"]) >= 2
     }
 
     session["threatLevel"] = compute_threat_level(signals)
 
-    # 6. Fingerprint
+    # -----------------------------------
+    # 6. SCAM FINGERPRINT
+    # -----------------------------------
     session["scamFingerprint"] = generate_fingerprint(session)
 
-    # 7. GUVI callback
+    # -----------------------------------
+    # 7. GUVI CALLBACK (ONCE)
+    # -----------------------------------
     if should_trigger_callback(session) and not session["callbackSent"]:
         session["callbackSent"] = True
 
@@ -152,9 +176,15 @@ def handle_message(
             "scamFingerprint": session["scamFingerprint"],
             "extractedIntelligence": session["intelligence"],
             "reasoningTrace": session["reasoningTrace"],
-            "agentNotes": "Persona-driven engagement with structured intelligence extraction."
+            "agentNotes": (
+                "Autonomous agent used persona-driven probing "
+                "to extract structured scam intelligence."
+            )
         })
 
+    # -----------------------------------
+    # 8. FINAL RESPONSE (GUVI SAFE)
+    # -----------------------------------
     return {
         "status": "success",
         "reply": reply
