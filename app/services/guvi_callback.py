@@ -2,18 +2,23 @@
 
 import requests
 
-GUVI_CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
+GUVI_ENDPOINT = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
 
-def send_guvi_callback(payload: dict):
-    """
-    Sends final extracted intelligence to GUVI evaluation endpoint.
-    """
+def send_guvi_callback(payload):
+    print(f"[GUVI] Sending callback for session: {payload.get('sessionId')}")
+
     try:
         response = requests.post(
-            GUVI_CALLBACK_URL,
+            GUVI_ENDPOINT,
             json=payload,
             timeout=5
         )
+
+        print(f"[GUVI] Callback status: {response.status_code}")
+        print(f"[GUVI] Callback response: {response.text}")
+
         return response.status_code
+
     except Exception as e:
-        return str(e)
+        print(f"[GUVI] Callback FAILED: {str(e)}")
+        return None

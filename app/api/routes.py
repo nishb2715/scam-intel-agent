@@ -173,7 +173,8 @@ def handle_message(
     # -----------------------------------
     # 7. FINAL GUVI CALLBACK (ONCE)
     # -----------------------------------
-    if should_trigger_callback(session) and not session["callbackSent"]:
+    if not session.get("callbackSent"):
+
         session["callbackSent"] = True
 
         final_payload = {
