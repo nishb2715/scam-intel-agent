@@ -44,7 +44,7 @@ def verify_api_key(x_api_key: str = Header(..., alias="x-api-key")):
 @router.get("/")
 @router.head("/")
 @router.post("/")
-def root_health_check():
+def root_health_check(_: Request):
     return {
         "status": "ok",
         "message": "Agentic honeypot API is live"
