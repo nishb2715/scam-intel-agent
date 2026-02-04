@@ -161,11 +161,8 @@ def handle_message(
     # -----------------------------------
     # 6. SCAM FINGERPRINTING
     # -----------------------------------
-    session["scamFingerprint"] = generate_fingerprint(
-        intelligence=session["intelligence"],
-        threat_level=session["threatLevel"],
-        probes=session["probesAsked"]
-    )
+    session["scamFingerprint"] = generate_fingerprint(session)
+
 
     session["reasoningTrace"].append({
         "turn": turn,
