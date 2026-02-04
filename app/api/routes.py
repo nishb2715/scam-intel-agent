@@ -173,7 +173,7 @@ def handle_message(
     # -----------------------------------
     # 7. FINAL GUVI CALLBACK (ONCE)
     # -----------------------------------
-    if not session.get("callbackSent"):
+    if should_trigger_callback(session) and not session.get("callbackSent"):
 
         session["callbackSent"] = True
 
