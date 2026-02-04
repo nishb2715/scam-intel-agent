@@ -1,5 +1,3 @@
-# app/api/routes.py
-
 from fastapi import APIRouter, Header, HTTPException, Depends
 import os
 
@@ -22,7 +20,7 @@ SCAM_ACTIVATION_THRESHOLD = 20
 
 
 # -------------------------
-# API KEY AUTH
+# API KEY AUTH (ONLY FOR REAL ENDPOINTS)
 # -------------------------
 def verify_api_key(x_api_key: str = Header(..., alias="x-api-key")):
     expected_key = os.environ.get("API_KEY")
@@ -40,19 +38,25 @@ def verify_api_key(x_api_key: str = Header(..., alias="x-api-key")):
         )
 
 
-@router.get("/auth-test")
-def auth_test(_: None = Depends(verify_api_key)):
-    return {"status": "auth ok"}
-
-
+# -------------------------
+# ROOT HEALTH CHECK (NO AUTH)
+# -------------------------
 @router.get("/")
 @router.head("/")
 @router.post("/")
-def root_health_check(_: None = Depends(verify_api_key)):
+def root_health_check():
     return {
         "status": "ok",
         "message": "Agentic honeypot API is live"
     }
+
+
+# -------------------------
+# AUTH TEST (DEBUG ONLY)
+# -------------------------
+@router.get("/auth-test")
+def auth_test(_: None = Depends(verify_api_key)):
+    return {"status": "auth ok"}
 
 
 # -------------------------
@@ -65,23 +69,17 @@ def handle_message(
 ):
     session = load_session(payload.sessionId)
 
-    # 🔒 GUARANTEE REQUIRED FIELDS (CRITICAL)
     session.setdefault("callbackSent", False)
     session.setdefault("probesAsked", [])
     session.setdefault("reasoningTrace", [])
 
-    # -----------------------------------
-    # 1. TURN & MESSAGE TRACKING
-    # -----------------------------------
+    # 1. Message tracking
     session["messages"].append(payload.message)
     turn = len(session["messages"])
 
-    # -----------------------------------
-    # 2. SCAM DETECTION
-    # -----------------------------------
-    message_scam_score = detect_scam(payload.message)
-    session["scamScore"] += message_scam_score
-    session["scamScore"] = min(session["scamScore"], 100)
+    # 2. Scam detection
+    score = detect_scam(payload.message)
+    session["scamScore"] = min(session["scamScore"] + score, 100)
 
     session["reasoningTrace"].append(
         log_reasoning(
@@ -98,60 +96,38 @@ def handle_message(
         "suspended" in payload.message.lower()
     ])
 
-    scam_mode = (
-        session["scamScore"] >= SCAM_ACTIVATION_THRESHOLD
-        or strong_signals
-    )
+    scam_mode = session["scamScore"] >= SCAM_ACTIVATION_THRESHOLD or strong_signals
 
-
-    # -----------------------------------
-    # 3. INTELLIGENCE EXTRACTION
-    # -----------------------------------
+    # 3. Intelligence extraction
     extracted = extract_entities(payload.message)
 
     for key, values in extracted.items():
         for value in values:
             existing = [i["value"] for i in session["intelligence"][key]]
-            occurrences = session["messages"].count(value)
-
             if value not in existing:
                 confidence = compute_confidence(
-                    occurrences=occurrences,
+                    occurrences=session["messages"].count(value),
                     formatted=True,
                     confirmed=False
                 )
-
                 session["intelligence"][key].append({
                     "value": value,
                     "confidence": confidence,
                     "sourceTurn": turn
                 })
 
-                session["reasoningTrace"].append({
-                    "turn": turn,
-                    "event": "intelligence_extracted",
-                    "type": key,
-                    "value": value,
-                    "confidence": confidence
-                })
-
-    # -----------------------------------
-    # 4. STRATEGIC PROBING / PERSONA
-    # -----------------------------------
+    # 4. Persona + probing
     if scam_mode:
-        probe_question, probe_type = get_probe_question(session)
-
-        if probe_question:
+        probe, probe_type = get_probe_question(session)
+        if probe:
             session["probesAsked"].append(probe_type)
-            reply = probe_question
+            reply = probe
         else:
             reply = scam_persona_reply()
     else:
         reply = neutral_reply()
 
-    # -----------------------------------
-    # 5. THREAT LEVEL SCORING
-    # -----------------------------------
+    # 5. Threat scoring
     signals = {
         "urgency": any(w in payload.message.lower() for w in ["urgent", "immediately", "today"]),
         "payment_redirect": "upi" in payload.message.lower(),
@@ -161,33 +137,14 @@ def handle_message(
 
     session["threatLevel"] = compute_threat_level(signals)
 
-    session["reasoningTrace"].append({
-        "turn": turn,
-        "event": "threat_level_updated",
-        "threatLevel": session["threatLevel"],
-        "scamScore": session["scamScore"]
-    })
-
-    # -----------------------------------
-    # 6. SCAM FINGERPRINTING
-    # -----------------------------------
+    # 6. Fingerprint
     session["scamFingerprint"] = generate_fingerprint(session)
 
-
-    session["reasoningTrace"].append({
-        "turn": turn,
-        "event": "scam_fingerprint_generated",
-        "fingerprint": session["scamFingerprint"]
-    })
-
-    # -----------------------------------
-    # 7. FINAL GUVI CALLBACK (ONCE)
-    # -----------------------------------
-    if should_trigger_callback(session) and not session.get("callbackSent"):
-
+    # 7. GUVI callback
+    if should_trigger_callback(session) and not session["callbackSent"]:
         session["callbackSent"] = True
 
-        final_payload = {
+        send_guvi_callback({
             "sessionId": payload.sessionId,
             "scamDetected": True,
             "totalMessagesExchanged": turn,
@@ -195,23 +152,9 @@ def handle_message(
             "scamFingerprint": session["scamFingerprint"],
             "extractedIntelligence": session["intelligence"],
             "reasoningTrace": session["reasoningTrace"],
-            "agentNotes": (
-                "Agent autonomously engaged scammer using persona-driven probing, "
-                "extracted structured intelligence, and assessed threat severity."
-            )
-        }
-
-        callback_status = send_guvi_callback(final_payload)
-
-        session["reasoningTrace"].append({
-            "turn": turn,
-            "event": "guvi_callback_sent",
-            "status": callback_status
+            "agentNotes": "Persona-driven engagement with structured intelligence extraction."
         })
 
-    # -----------------------------------
-    # 8. FINAL RESPONSE
-    # -----------------------------------
     return {
         "status": "success",
         "reply": reply
