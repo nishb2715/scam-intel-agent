@@ -45,6 +45,8 @@ def auth_test(_: None = Depends(verify_api_key)):
     return {"status": "auth ok"}
 
 
+@router.get("/")
+@router.head("/")
 @router.post("/")
 def root_health_check(_: None = Depends(verify_api_key)):
     return {
