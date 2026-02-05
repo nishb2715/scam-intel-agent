@@ -1,6 +1,7 @@
 # app/api/routes.py
 
 from fastapi import APIRouter, Header, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 import os
 
 from app.models.schemas import IncomingMessage
@@ -22,48 +23,24 @@ SCAM_ACTIVATION_THRESHOLD = 20
 
 
 # -------------------------
-# API KEY AUTH (ONLY FOR REAL ENDPOINTS)
+# HELPER: Verify API Key
 # -------------------------
-def verify_api_key(x_api_key: str = Header(..., alias="x-api-key")):
+def verify_api_key_from_request(request: Request) -> bool:
+    """Check if request has valid API key"""
+    api_key = request.headers.get("x-api-key")
     expected_key = os.environ.get("API_KEY")
-
+    
     if not expected_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Server misconfiguration: API key not set"
-        )
-
-    if x_api_key != expected_key:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or missing API key"
-        )
+        return False
+    
+    return api_key == expected_key
 
 
 # -------------------------
-# ROOT HEALTH CHECK (NO AUTH, NO BODY)
+# CORE MESSAGE HANDLING LOGIC (EXTRACTED)
 # -------------------------
-@router.api_route("/", methods=["GET", "POST", "HEAD"])
-async def root_health_check(request: Request):
-    return {
-        "status": "success",
-        "reply": "Agentic honeypot API is live"
-    }
-
-
-# -------------------------
-# AUTH TEST (OPTIONAL)
-# -------------------------
-@router.get("/auth-test")
-def auth_test(_: None = Depends(verify_api_key)):
-    return {"status": "auth ok"}
-
-
-@router.post("/message")
-def handle_message(
-    payload: IncomingMessage,
-    _: None = Depends(verify_api_key)
-):
+def handle_message_logic(payload: IncomingMessage):
+    """Core message handling logic - used by both / and /message endpoints"""
     try:
         session = load_session(payload.sessionId)
         session.setdefault("callbackSent", False)
@@ -78,7 +55,6 @@ def handle_message(
         else:
             text = str(payload.message)
 
-        # Ensure text is not empty
         if not text:
             return {
                 "status": "success",
@@ -160,7 +136,6 @@ def handle_message(
         if should_trigger_callback(session) and not session["callbackSent"]:
             session["callbackSent"] = True
 
-            # Send in background thread
             send_guvi_callback({
                 "sessionId": payload.sessionId,
                 "scamDetected": True,
@@ -175,15 +150,14 @@ def handle_message(
                 )
             })
 
-        # Return immediately (don't wait for callback)
+        # Return response
         return {
             "status": "success",
             "reply": reply
         }
     
     except Exception as e:
-        # Log error but return valid response
-        print(f"ERROR in handle_message: {e}")
+        print(f"ERROR in handle_message_logic: {e}")
         import traceback
         traceback.print_exc()
         
@@ -192,3 +166,94 @@ def handle_message(
             "status": "success",
             "reply": "I'm having trouble understanding. Can you explain again?"
         }
+
+
+# -------------------------
+# ROOT ENDPOINT (HANDLES BOTH GET AND POST)
+# -------------------------
+@router.api_route("/", methods=["GET", "POST", "HEAD"])
+async def root_endpoint(request: Request):
+    """
+    GET/HEAD: Health check
+    POST: Message handling (for evaluation compatibility)
+    """
+    
+    # Health check for GET/HEAD
+    if request.method in ["GET", "HEAD"]:
+        return {
+            "status": "success",
+            "reply": "Agentic honeypot API is live"
+        }
+    
+    # POST: Handle as message request
+    try:
+        # Verify API key
+        if not verify_api_key_from_request(request):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing API key"}
+            )
+        
+        # Parse request body
+        body = await request.json()
+        
+        # Check if it's a message request
+        if "sessionId" in body and "message" in body:
+            payload = IncomingMessage(**body)
+            return handle_message_logic(payload)
+        
+        # Not a message request
+        return {
+            "status": "success",
+            "reply": "Invalid request format"
+        }
+    
+    except Exception as e:
+        print(f"Root endpoint error: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "reply": "I'm having trouble processing that. Can you try again?"
+            }
+        )
+
+
+# -------------------------
+# /message ENDPOINT (EXPLICIT PATH)
+# -------------------------
+def verify_api_key(x_api_key: str = Header(..., alias="x-api-key")):
+    """API key dependency for /message endpoint"""
+    expected_key = os.environ.get("API_KEY")
+
+    if not expected_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Server misconfiguration: API key not set"
+        )
+
+    if x_api_key != expected_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key"
+        )
+
+
+@router.post("/message")
+def handle_message(
+    payload: IncomingMessage,
+    _: None = Depends(verify_api_key)
+):
+    """Dedicated /message endpoint"""
+    return handle_message_logic(payload)
+
+
+# -------------------------
+# AUTH TEST (OPTIONAL)
+# -------------------------
+@router.get("/auth-test")
+def auth_test(_: None = Depends(verify_api_key)):
+    return {"status": "auth ok"}
