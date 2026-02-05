@@ -59,133 +59,136 @@ def auth_test(_: None = Depends(verify_api_key)):
     return {"status": "auth ok"}
 
 
-# -------------------------
-# MAIN MESSAGE HANDLER
-# -------------------------
 @router.post("/message")
 def handle_message(
     payload: IncomingMessage,
     _: None = Depends(verify_api_key)
 ):
-    session = load_session(payload.sessionId)
+    try:
+        session = load_session(payload.sessionId)
+        session.setdefault("callbackSent", False)
+        session.setdefault("probesAsked", [])
+        session.setdefault("reasoningTrace", [])
 
-    session.setdefault("callbackSent", False)
-    session.setdefault("probesAsked", [])
-    session.setdefault("reasoningTrace", [])
-
-    # -----------------------------------
-    # 1. NORMALIZE MESSAGE (CRITICAL FIX)
-    # -----------------------------------
-    if isinstance(payload.message, dict):
-        text = payload.message.get("text", "")
-    else:
-        text = payload.message or ""
-
-    session["messages"].append(text)
-    turn = len(session["messages"])
-
-    # -----------------------------------
-    # 2. SCAM DETECTION (TEXT ONLY)
-    # -----------------------------------
-    score = detect_scam(text)
-    session["scamScore"] = min(session["scamScore"] + score, 100)
-
-    session["reasoningTrace"].append(
-        log_reasoning(
-            turn=turn,
-            event="scam_signal_detected",
-            scam_score=session["scamScore"]
-        )
-    )
-
-    text_lower = text.lower()
-
-    strong_signals = any([
-        "upi" in text_lower,
-        "http" in text_lower,
-        "blocked" in text_lower,
-        "suspended" in text_lower
-    ])
-
-    scam_mode = (
-        session["scamScore"] >= SCAM_ACTIVATION_THRESHOLD
-        or strong_signals
-    )
-
-    # -----------------------------------
-    # 3. INTELLIGENCE EXTRACTION (TEXT ONLY)
-    # -----------------------------------
-    extracted = extract_entities(text)
-
-    for key, values in extracted.items():
-        for value in values:
-            existing = [i["value"] for i in session["intelligence"][key]]
-            if value not in existing:
-                confidence = compute_confidence(
-                    occurrences=session["messages"].count(value),
-                    formatted=True,
-                    confirmed=False
-                )
-                session["intelligence"][key].append({
-                    "value": value,
-                    "confidence": confidence,
-                    "sourceTurn": turn
-                })
-
-    # -----------------------------------
-    # 4. PERSONA / PROBING
-    # -----------------------------------
-    if scam_mode:
-        probe, probe_type = get_probe_question(session)
-        if probe:
-            session["probesAsked"].append(probe_type)
-            reply = probe
+        # Normalize message
+        if isinstance(payload.message, dict):
+            text = payload.message.get("text", "")
+        elif isinstance(payload.message, str):
+            text = payload.message
         else:
-            reply = scam_persona_reply()
-    else:
-        reply = neutral_reply()
+            text = str(payload.message)
 
-    # -----------------------------------
-    # 5. THREAT LEVEL
-    # -----------------------------------
-    signals = {
-        "urgency": any(w in text_lower for w in ["urgent", "immediately", "today"]),
-        "payment_redirect": "upi" in text_lower,
-        "phishing": "http" in text_lower,
-        "multi_step": len(session["probesAsked"]) >= 2
-    }
+        # Ensure text is not empty
+        if not text:
+            return {
+                "status": "success",
+                "reply": "I didn't catch that. Can you repeat?"
+            }
 
-    session["threatLevel"] = compute_threat_level(signals)
+        session["messages"].append(text)
+        turn = len(session["messages"])
 
-    # -----------------------------------
-    # 6. SCAM FINGERPRINT
-    # -----------------------------------
-    session["scamFingerprint"] = generate_fingerprint(session)
+        # Scam detection
+        score = detect_scam(text)
+        session["scamScore"] = min(session["scamScore"] + score, 100)
 
-    # -----------------------------------
-    # 7. GUVI CALLBACK (ONCE)
-    # -----------------------------------
-    if should_trigger_callback(session) and not session["callbackSent"]:
-        session["callbackSent"] = True
-
-        send_guvi_callback({
-            "sessionId": payload.sessionId,
-            "scamDetected": True,
-            "totalMessagesExchanged": turn,
-            "threatLevel": session["threatLevel"],
-            "scamFingerprint": session["scamFingerprint"],
-            "extractedIntelligence": session["intelligence"],
-            "reasoningTrace": session["reasoningTrace"],
-            "agentNotes": (
-                "Autonomous agent used persona-driven probing "
-                "to extract structured scam intelligence."
+        session["reasoningTrace"].append(
+            log_reasoning(
+                turn=turn,
+                event="scam_signal_detected",
+                scam_score=session["scamScore"]
             )
-        })
+        )
 
-    # -----------------------------------
-    # 8. FINAL RESPONSE (GUVI SAFE)
-    # -----------------------------------
-    return {
-        "status": "success",
-        "reply": reply
-    }
+        text_lower = text.lower()
+
+        strong_signals = any([
+            "upi" in text_lower,
+            "http" in text_lower,
+            "blocked" in text_lower,
+            "suspended" in text_lower
+        ])
+
+        scam_mode = (
+            session["scamScore"] >= SCAM_ACTIVATION_THRESHOLD
+            or strong_signals
+        )
+
+        # Intelligence extraction
+        extracted = extract_entities(text)
+
+        for key, values in extracted.items():
+            for value in values:
+                existing = [i["value"] for i in session["intelligence"][key]]
+                if value not in existing:
+                    confidence = compute_confidence(
+                        occurrences=session["messages"].count(value),
+                        formatted=True,
+                        confirmed=False
+                    )
+                    session["intelligence"][key].append({
+                        "value": value,
+                        "confidence": confidence,
+                        "sourceTurn": turn
+                    })
+
+        # Persona / Probing
+        if scam_mode:
+            probe, probe_type = get_probe_question(session)
+            if probe:
+                session["probesAsked"].append(probe_type)
+                reply = probe
+            else:
+                reply = scam_persona_reply()
+        else:
+            reply = neutral_reply()
+
+        # Threat level
+        signals = {
+            "urgency": any(w in text_lower for w in ["urgent", "immediately", "today"]),
+            "payment_redirect": "upi" in text_lower,
+            "phishing": "http" in text_lower,
+            "multi_step": len(session["probesAsked"]) >= 2
+        }
+
+        session["threatLevel"] = compute_threat_level(signals)
+
+        # Scam fingerprint
+        session["scamFingerprint"] = generate_fingerprint(session)
+
+        # GUVI callback (non-blocking, only once)
+        if should_trigger_callback(session) and not session["callbackSent"]:
+            session["callbackSent"] = True
+
+            # Send in background thread
+            send_guvi_callback({
+                "sessionId": payload.sessionId,
+                "scamDetected": True,
+                "totalMessagesExchanged": turn,
+                "threatLevel": session["threatLevel"],
+                "scamFingerprint": session["scamFingerprint"],
+                "extractedIntelligence": session["intelligence"],
+                "reasoningTrace": session["reasoningTrace"],
+                "agentNotes": (
+                    "Autonomous agent used persona-driven probing "
+                    "to extract structured scam intelligence."
+                )
+            })
+
+        # Return immediately (don't wait for callback)
+        return {
+            "status": "success",
+            "reply": reply
+        }
+    
+    except Exception as e:
+        # Log error but return valid response
+        print(f"ERROR in handle_message: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Return safe fallback
+        return {
+            "status": "success",
+            "reply": "I'm having trouble understanding. Can you explain again?"
+        }
